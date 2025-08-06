@@ -69,7 +69,7 @@ input/
 
 # Scrapy stuff:
 .scrapy
-
+processed_files.log
 # Sphinx documentation
 docs/_build/
 

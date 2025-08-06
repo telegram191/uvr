@@ -145,32 +145,98 @@ class _audio_pre_():
 
         print(f'{name} processing completed')
 
-def get_audio_files(input_folder):
-    """Get all audio files from input folder"""
-    audio_extensions = ['*.mp3', '*.wav', '*.flac', '*.m4a', '*.aac', '*.ogg']
+def read_processed_files(log_file):
+    """Read the log file of processed files"""
+    processed_files = set()
+    if os.path.exists(log_file):
+        with open(log_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    processed_files.add(line)
+    return processed_files
+
+def log_processed_file(log_file, file_path):
+    """Log a processed file"""
+    with open(log_file, 'a', encoding='utf-8') as f:
+        f.write(f"{file_path}\n")
+
+def get_audio_files(input_folder, log_file):
+    """Get all audio files from input folder that haven't been processed"""
+    audio_extensions = ['*.mp3', '*.wav']
     audio_files = []
     
-    for ext in audio_extensions:
-        audio_files.extend(glob.glob(os.path.join(input_folder, ext)))
-        audio_files.extend(glob.glob(os.path.join(input_folder, ext.upper())))
+    # Get processed files from log
+    processed_files = read_processed_files(log_file)
     
-    return sorted(audio_files)
+    # Get all audio files
+    for ext in audio_extensions:
+        found_files = glob.glob(os.path.join(input_folder, ext))
+        for file in found_files:
+            # Skip hidden files and temp files
+            basename = os.path.basename(file)
+            if not basename.startswith('.') and not basename.startswith('~'):
+                # Convert to absolute path for consistent comparison
+                abs_path = os.path.abspath(file)
+                if abs_path not in processed_files:
+                    audio_files.append(abs_path)
+    
+    # Sort files and remove duplicates
+    audio_files = sorted(list(set(audio_files)))
+    
+    # Print found files for debugging
+    if audio_files:
+        print("\nFound new files to process:")
+        for file in audio_files:
+            print(f"  - {os.path.basename(file)} ({file})")
+    else:
+        print("\nNo new files to process.")
+        if processed_files:
+            print("\nPreviously processed files:")
+            for file in sorted(processed_files):
+                print(f"  - {os.path.basename(file)}")
+    
+    return audio_files
+
+def process_audio_file(args):
+    """Worker function for multiprocessing"""
+    audio_file, model_path, device, is_half, output_root, log_file = args
+    try:
+        # Initialize model in each worker
+        pre_fun = _audio_pre_(model_path=model_path, device=device, is_half=is_half)
+        
+        # Process the file
+        pre_fun._path_audio_(audio_file, output_root)
+        
+        # Log successful processing
+        log_processed_file(log_file, audio_file)
+        
+        return f"Successfully processed: {os.path.basename(audio_file)}"
+    except Exception as e:
+        error_msg = f"Error processing {os.path.basename(audio_file)}: {str(e)}"
+        print(error_msg)  # Print error immediately
+        return error_msg
 
 if __name__ == '__main__':
-    # Auto-detect device
+    # Auto-detect device and number of workers
     import torch
+    import multiprocessing as mp
+    
     if torch.cuda.is_available():
         device = 'cuda'
         is_half = True
+        num_workers = 1  # CUDA usually works better with 1 worker
     else:
         device = 'cpu'
         is_half = False
-        print("CUDA not available, using CPU instead")
+        num_workers = min(mp.cpu_count(), 3)  # Use up to 3 CPU cores
+        print(f"CUDA not available, using CPU with {num_workers} workers")
     
     # Configuration
     model_path = 'uvr5_weights/2_HP-UVR.pth'
     input_folder = 'input'
     output_root = 'output'
+    log_file = os.path.join('processed_files.log')
     
     # Check if input folder exists
     if not os.path.exists(input_folder):
@@ -179,37 +245,33 @@ if __name__ == '__main__':
         print(f"Please put your audio files in the '{input_folder}' folder and run again.")
         sys.exit(1)
     
-    # Get all audio files
-    audio_files = get_audio_files(input_folder)
-    
-    if not audio_files:
-        print(f"No audio files found in '{input_folder}' folder.")
-        print("Supported formats: mp3, wav, flac, m4a, aac, ogg")
-        sys.exit(1)
-    
-    print(f"Found {len(audio_files)} audio files to process:")
-    for file in audio_files:
-        print(f"  - {os.path.basename(file)}")
-    
     # Create output folder
     os.makedirs(output_root, exist_ok=True)
     
-    # Initialize the model once
-    pre_fun = _audio_pre_(model_path=model_path, device=device, is_half=is_half)
+    # Get all audio files that haven't been processed
+    audio_files = get_audio_files(input_folder, log_file)
     
-    # Process files sequentially
-    print(f"\nProcessing {len(audio_files)} files...")
-    results = []
+    if not audio_files:
+        if os.path.exists(log_file):
+            print("\nAll files have been processed.")
+        else:
+            print(f"\nNo audio files found in '{input_folder}' folder.")
+            print("Supported formats: mp3, wav")
+        sys.exit(0)
     
-    for i, audio_file in enumerate(tqdm(audio_files, desc="Processing files")):
-        try:
-            print(f"\nProcessing {i+1}/{len(audio_files)}: {os.path.basename(audio_file)}")
-            pre_fun._path_audio_(audio_file, output_root)
-            results.append(f"Successfully processed: {os.path.basename(audio_file)}")
-        except Exception as e:
-            error_msg = f"Error processing {os.path.basename(audio_file)}: {str(e)}"
-            print(error_msg)
-            results.append(error_msg)
+    print(f"\nProcessing {len(audio_files)} files with {num_workers} workers...")
+    
+    # Prepare arguments for multiprocessing
+    args_list = [(audio_file, model_path, device, is_half, output_root, log_file) 
+                 for audio_file in audio_files]
+    
+    # Process files in parallel
+    with mp.Pool(processes=num_workers) as pool:
+        results = list(tqdm(
+            pool.imap(process_audio_file, args_list),
+            total=len(audio_files),
+            desc="Processing files"
+        ))
     
     # Print results
     print("\nProcessing completed!")
