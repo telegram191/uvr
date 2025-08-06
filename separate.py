@@ -104,14 +104,18 @@ class _audio_pre_():
         else:
             wav_vocals = spec_utils.cmb_spectrogram_to_wave(v_spec_m, self.mp)
 
-        # Save as MP3 using temporary WAV files
-        with tempfile.NamedTemporaryFile(suffix='.wav') as temp_inst, \
-             tempfile.NamedTemporaryFile(suffix='.wav') as temp_vocal:
-            
+        # Create temporary directory in output folder
+        temp_dir = os.path.join(song_dir, 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        try:
             # Save temporary WAV files
-            wavfile.write(temp_inst.name, self.mp.param['sr'], 
+            temp_inst = os.path.join(temp_dir, 'temp_inst.wav')
+            temp_vocal = os.path.join(temp_dir, 'temp_vocal.wav')
+            
+            wavfile.write(temp_inst, self.mp.param['sr'], 
                          (np.array(wav_instrument)*32768).astype("int16"))
-            wavfile.write(temp_vocal.name, self.mp.param['sr'], 
+            wavfile.write(temp_vocal, self.mp.param['sr'], 
                          (np.array(wav_vocals)*32768).astype("int16"))
             
             # Convert to high quality MP3 using ffmpeg
@@ -121,7 +125,7 @@ class _audio_pre_():
             inst_output = os.path.join(song_dir, 'instrument.mp3')
             subprocess.run([
                 'ffmpeg', '-y',  # Overwrite output files
-                '-i', temp_inst.name,  # Input file
+                '-i', temp_inst,  # Input file
                 '-acodec', 'libmp3lame',  # MP3 codec
                 '-ab', '320k',  # Fixed bitrate
                 '-ar', '44100',  # Sample rate
@@ -133,13 +137,23 @@ class _audio_pre_():
             vocal_output = os.path.join(song_dir, 'vocal.mp3')
             subprocess.run([
                 'ffmpeg', '-y',  # Overwrite output files
-                '-i', temp_vocal.name,  # Input file
+                '-i', temp_vocal,  # Input file
                 '-acodec', 'libmp3lame',  # MP3 codec
                 '-ab', '320k',  # Fixed bitrate
                 '-ar', '44100',  # Sample rate
                 '-joint_stereo', '1',  # Joint stereo
                 vocal_output
             ], check=True, capture_output=True)
+        finally:
+            # Clean up temporary files
+            try:
+                if os.path.exists(temp_inst):
+                    os.remove(temp_inst)
+                if os.path.exists(temp_vocal):
+                    os.remove(temp_vocal)
+                os.rmdir(temp_dir)
+            except:
+                pass  # Ignore cleanup errors
             
             print(f'Converting to MP3 with bitrate: 320k')
 
